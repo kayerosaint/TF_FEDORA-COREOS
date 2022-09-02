@@ -94,7 +94,7 @@ resource "aws_instance" "app_server" {
   instance_type          = "t2.micro"
   vpc_security_group_ids = [aws_security_group.my_webserver.id]
   subnet_id              = data.aws_subnet.public_subnets.id
-  #user_data       = data.ct_config.config.rendered
+  user_data              = data.ct_config.config.rendered
   tags = {
     Name = "Study AppServer"
   }
@@ -104,12 +104,12 @@ resource "aws_instance" "app_server" {
 
 terraform {
   required_providers {
-    /*
+
     ct = {
       source  = "poseidon/ct"
       version = "0.8.0"
     }
-*/
+
     aws = {
       source  = "hashicorp/aws"
       version = "~> 3.38"
@@ -123,22 +123,22 @@ provider "aws" {
   region  = "eu-west-3"
 }
 
-# provider "ct" {}
+provider "ct" {}
 
 
 locals {
-  # FEDORA-COREOS
+
   instance_ami = "ami-0ca82f640eae28513"
 }
 
 #================SSH-Poseidon provider=================#
 
-/*
+
 
 locals {
   instance_key_file = "ssh_keys/id_rsa_instance_key.pub"
   instance_user     = "core"
-  #...
+
 }
 
 data "ct_config" "config" {
@@ -148,4 +148,29 @@ data "ct_config" "config" {
   })
   strict = true
 }
-*/
+
+#=====================IGW,Routing=======================#
+
+resource "aws_internet_gateway" "main" {
+  vpc_id = data.aws_vpc.dev_vpc.id
+  tags = {
+    Name = "${var.env}-igw"
+  }
+}
+
+resource "aws_route_table" "public_subnets" {
+  vpc_id = data.aws_vpc.dev_vpc.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+  tags = {
+    Name = "${var.env}-route-public-subnets"
+  }
+}
+
+resource "aws_route_table_association" "public_routes" {
+  count          = length(aws_subnet.public_subnets[*].id)
+  route_table_id = aws_route_table.public_subnets.id
+  subnet_id      = element(aws_subnet.public_subnets[*].id, count.index)
+}
