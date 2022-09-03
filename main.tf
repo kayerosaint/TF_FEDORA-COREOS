@@ -1,7 +1,8 @@
 ############################################################
 ##             Create instance with Fedora Coreos         ##
-##               security group, ssh-poseidon             ##
-##                                                        ##
+##               security group, ssh-poseidon,            ##
+##               IGW, Routing, Subnet, ElasticIP          ##
+##                 Created by Maksim Kulikov              ##
 ############################################################
 
 
@@ -13,6 +14,7 @@ data "aws_vpc" "dev_vpc" {
   }
 }
 
+data "aws_availability_zones" "available" {}
 
 resource "aws_security_group" "my_webserver" {
   name        = "WebServer Security Group"
@@ -63,6 +65,7 @@ resource "aws_subnet" "public_subnets" {
   count                   = length(var.public_subnet_cidrs)
   vpc_id                  = data.aws_vpc.dev_vpc.id
   cidr_block              = element(var.public_subnet_cidrs, count.index)
+  availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
   tags = {
     Name = "${var.env}-public-${count.index + 1}"
@@ -79,27 +82,71 @@ variable "public_subnet_cidrs" {
     "10.0.9.0/24",
   ]
 }
-
+/*
 data "aws_subnet" "public_subnets" {
   tags = {
     Name = "development-public-1"
+    Name = "development-public-2"
   }
   depends_on = [aws_subnet.public_subnets]
 }
+*/
 
+#=====================IGW,Routing=======================#
+
+resource "aws_internet_gateway" "main" {
+  vpc_id = data.aws_vpc.dev_vpc.id
+  tags = {
+    Name = "${var.env}-igw"
+  }
+}
+
+resource "aws_route_table" "public_subnets" {
+  count  = length(var.public_subnet_cidrs)
+  vpc_id = data.aws_vpc.dev_vpc.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+  tags = {
+    Name = "${var.env}-route-public-subnets"
+  }
+}
+
+resource "aws_route_table_association" "public_routes" {
+  count          = length(aws_subnet.public_subnets[*].id)
+  route_table_id = element(aws_route_table.public_subnets[*].id, count.index)
+  subnet_id      = element(aws_subnet.public_subnets[*].id, count.index)
+}
+#===================Elastic-IP=============================#
+##3nd phase
+resource "aws_eip" "eip" {
+  count = length(var.public_subnet_cidrs)
+  vpc   = true
+  tags = {
+    Name = "${var.env}-gw-${count.index + 1}"
+  }
+}
+
+resource "aws_eip_association" "eip_assoc" {
+  count         = length(aws_eip.eip[*].id)
+  instance_id   = element(aws_instance.app_server[*].id, count.index)
+  allocation_id = element(aws_eip.eip[*].id, count.index)
+}
+##3nd phase
 #=====================instance=============================#
 
 resource "aws_instance" "app_server" {
   ami                    = local.instance_ami
   instance_type          = "t2.micro"
   vpc_security_group_ids = [aws_security_group.my_webserver.id]
-  subnet_id              = data.aws_subnet.public_subnets.id
+  count                  = length(aws_subnet.public_subnets[*].id)
+  subnet_id              = element(aws_subnet.public_subnets[*].id, count.index)
   user_data              = data.ct_config.config.rendered
   tags = {
     Name = "Study AppServer"
   }
 }
-
 
 
 terraform {
@@ -108,6 +155,11 @@ terraform {
     ct = {
       source  = "poseidon/ct"
       version = "0.8.0"
+    }
+
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "2.11.0"
     }
 
     aws = {
@@ -149,28 +201,28 @@ data "ct_config" "config" {
   strict = true
 }
 
-#=====================IGW,Routing=======================#
+#==============Create docker container=================#
 
-resource "aws_internet_gateway" "main" {
-  vpc_id = data.aws_vpc.dev_vpc.id
-  tags = {
-    Name = "${var.env}-igw"
-  }
+##2 phase
+provider "docker" {
+  #host = "ssh://${local.instance_user}@${aws_instance.app_server[0].public_ip}:22"
+  host = "ssh://${local.instance_user}@${aws_eip.eip[1].public_ip}:22"
 }
 
-resource "aws_route_table" "public_subnets" {
-  vpc_id = data.aws_vpc.dev_vpc.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.main.id
-  }
-  tags = {
-    Name = "${var.env}-route-public-subnets"
-  }
+resource "docker_image" "ruby-test-app" {
+  name = "kayerosaint/ruby-test-app:latest"
 }
 
-resource "aws_route_table_association" "public_routes" {
-  count          = length(aws_subnet.public_subnets[*].id)
-  route_table_id = aws_route_table.public_subnets.id
-  subnet_id      = element(aws_subnet.public_subnets[*].id, count.index)
+resource "docker_container" "ruby-test-app" {
+  image   = docker_image.ruby-test-app.latest
+  name    = "ruby-test-app"
+  restart = "unless-stopped"
+  env = [
+    "PORT=4000",
+  ]
+  ports {
+    internal = 4000
+    external = 80
+  }
 }
+##2 phase
