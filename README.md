@@ -1,1 +1,0 @@
-Create instances (without modules, module version you can find here > https://github.com/kayerosaint/tf_fedora-os_modules ) using Fedora Coreos with Docker inside, security group, ssh-poseidon, IGW, Routing, Subnets, ElasticIP. Created by Maksim Kulikov, 2022
